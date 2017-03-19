@@ -66,15 +66,31 @@ int main(int argc, char **argv ) {
 }
 
 int num_workers_available(int* workers, int numworkers){
+  /* Count how many workers available
+  Args:
+    workers: List of workers (1 available, 0 not available)
+    numworkers: Number of workers (numprocs-1)
+
+  Return:
+    available: number of available worker
+  */
   int available = 0;
   int i = 0;
-  for (i=0;i<numworkers;i++){
+  for (i=0; i<numworkers; i++){
     available = available + workers[i];
   }
   return available;
 }
 
 double farmer(int numprocs) {
+  /* Farmer function
+  Args:
+    numprocs: number of process
+
+  Return:
+    result: area
+  */
+
   MPI_Status status;
   stack* stack;
   stack = new_stack();
@@ -82,82 +98,95 @@ double farmer(int numprocs) {
   int numworkers = numprocs - 1;
   
   int* workers = (int*) malloc(sizeof(int)*(numworkers));
-  int i,j;
-  for (i=0;i<numworkers;i++){
+  int i;
+  for (i=0; i<numworkers; i++){
     workers[i] = 0;
   }
-  int available_workers = 0;
   double result = 0;
 
-  while(1) {
-    MPI_Recv(temp, 2, MPI_DOUBLE, MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
-    fprintf(stdout, "Source = %d\t", status.MPI_SOURCE);
+  while (1) {
+    MPI_Recv(temp, 2, MPI_DOUBLE, MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, &status); // receive from a worker
     workers[status.MPI_SOURCE - 1] = 1;
 
+    // check if worker sends left/mid/right (MPI_TAG = 0) else larea+rarea (MPI_TAG = 1)
     if (status.MPI_TAG == 0) {
       push(temp,stack);
-      MPI_Recv(temp, 2, MPI_DOUBLE, status.MPI_SOURCE, status.MPI_TAG, MPI_COMM_WORLD, &status);
-      fprintf(stdout, "Source = %d\t", status.MPI_SOURCE);
+      MPI_Recv(temp, 2, MPI_DOUBLE, status.MPI_SOURCE, status.MPI_TAG, MPI_COMM_WORLD, &status); // receive again from a worker 2/2
       push(temp,stack);
     }
     else {
-      result += temp[0];
-      fprintf(stdout, "Temp[0] = %f\t", temp[0]);
-        }
-    for (j=0;j<numworkers;j++){
-      if (!is_empty(stack) && workers[j]) {
-        MPI_Send(pop(stack), 2, MPI_DOUBLE, j+1, 0, MPI_COMM_WORLD);
-        workers[j] = 0;
-        fprintf(stdout, "Worker Just Assigned = %d\t", j+1);
-        tasks_per_process[j+1]++;
-            }
+      result = result + temp[0]; // add the calculation to result
     }
-    available_workers = num_workers_available(workers, numworkers);
-    fprintf(stdout, "Down avail = %d \n", num_workers_available(workers, numworkers));
-    if (is_empty(stack) && available_workers == numworkers){
+
+    // distributing tasks for available/free workers
+    for (i=0; i<numworkers; i++){
+      if (!is_empty(stack) && workers[i]) {
+        MPI_Send(pop(stack), 2, MPI_DOUBLE, i+1, 0, MPI_COMM_WORLD);
+        tasks_per_process[i+1]++;
+        workers[i] = 0;
+      }
+    }
+
+    // calculation complete condition. when stack is empty and all workers are available (distribution tasks complete).
+    if (is_empty(stack) && num_workers_available(workers, numworkers) == numworkers){
       break;
     }
+
   }
-  for (i=0;i<numworkers;i++) {
+
+  // send finish tag (MPI_TAG = 2)
+  for (i=0; i<numworkers; i++) {
     temp[0] = 0; temp[1] = 0;
     MPI_Send(temp, 2, MPI_DOUBLE, i+1, 2, MPI_COMM_WORLD);
   }
-  return result;
+
+  return result; // return the result
 }
 
 void worker(int mypid) {
-  // You must complete this function
+  /* Worker function
+  Args:
+    mypid
+  Return:
+    None
+  */
+
   MPI_Status status;
   double temp[] = {0,0};
   MPI_Send(temp, 2, MPI_DOUBLE, 0, 1, MPI_COMM_WORLD);
+
   while (1) {
-    MPI_Recv(temp, 2, MPI_DOUBLE, 0, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
+    MPI_Recv(temp, 2, MPI_DOUBLE, 0, MPI_ANY_TAG, MPI_COMM_WORLD, &status); // receive computation condition from farmer. If MPI_TAG==2 then break.
+
     if (status.MPI_TAG != 2) {
+      // Aquad function. It's just the aquadsequential.c when written in MPI workers.
       double left = temp[0];
       double right = temp[1];
-      double lrarea = (F(left) + F(right)) * (right - left) / 2;
+      double lrarea = (F(left) + F(right)) * (right - left)/2;
       double mid, fmid, larea, rarea;
 
-      mid = (left + right) / 2;
+      mid = (left + right)/2;
       fmid = F(mid);
-      larea = (F(left) + fmid) * (mid - left) / 2;
-      rarea = (fmid + F(right)) * (right - mid) / 2;
+      larea = (F(left) + fmid) * (mid - left)/2;
+      rarea = (fmid + F(right)) * (right - mid)/2;
       
-      usleep(2000);
+      usleep(2000); // delay so that the farmer is not hijacked by a worker.
       
       if ( fabs((larea + rarea) - lrarea) > EPSILON) {
         temp[0] = left; temp[1] = mid;
-        MPI_Send(temp, 2, MPI_DOUBLE, 0, 0, MPI_COMM_WORLD); // larea
+        MPI_Send(temp, 2, MPI_DOUBLE, 0, 0, MPI_COMM_WORLD);
         temp[0] = mid; temp[1] = right;
-        MPI_Send(temp, 2, MPI_DOUBLE, 0, 0, MPI_COMM_WORLD); // rarea
+        MPI_Send(temp, 2, MPI_DOUBLE, 0, 0, MPI_COMM_WORLD);
       }
       else {
         temp[0] = larea + rarea; temp[1] = 0;
         MPI_Send(temp, 2, MPI_DOUBLE, 0, 1, MPI_COMM_WORLD);
-          }
+      }
     }
     else {
       break;
     }
-    }
+
+  }
+
 }
